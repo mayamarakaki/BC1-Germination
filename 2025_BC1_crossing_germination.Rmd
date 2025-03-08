@@ -1,0 +1,24 @@
+---
+title: "BC1 Germination"
+output: html_document
+date: "2025-03-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(googlesheets4)
+library(dplyr)
+library(tidyverse)
+```
+```{r}
+url <- "https://docs.google.com/spreadsheets/d/1gahg5AAfwfiCjb2GHXv-6UdfbqXn-w_abq_tlAU2u9c/edit?gid=0#gid=0"
+germ <- read_sheet(url)
+```
+Germination Proportion
+```{r}
+
+```
+
