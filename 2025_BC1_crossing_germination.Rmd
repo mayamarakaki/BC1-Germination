@@ -17,8 +17,89 @@ library(tidyverse)
 url <- "https://docs.google.com/spreadsheets/d/1gahg5AAfwfiCjb2GHXv-6UdfbqXn-w_abq_tlAU2u9c/edit?gid=0#gid=0"
 germ <- read_sheet(url)
 ```
-Germination Proportion
+Pivot long and convert date to days to germ
 ```{r}
+#Remove total count and notes columns
+germ <- germ[, 1:35] 
+
+#Check if more seeds germinated in a pot than the number of seeds planted - NOPE, LOOKS GOOD!
+count_sum_check <- germ %>%
+  mutate(count = rowSums(select(.,7:ncol(germ)), na.rm=TRUE),
+         exceeds_count = count > Total_Seeds_Planted)
+
+#pivot long
+germ_long <- germ %>%
+  pivot_longer(cols = 7:ncol(germ),
+               names_to= "Date",
+               values_to = "Num_germ") %>%
+  mutate(Date=mdy(Date))
+
+#Convert date to days to germ
+start_date <- as.Date("2025-02-06")
+
+germ_long <- germ_long %>%
+  mutate(Days_to_germ = as.integer(Date-start_date))
+```
+
+Cumulative sum per pot 
+```{r}
+germ_long <- germ_long %>%
+  group_by(dame_pop, dame_mf_rep, sire_pop, sire_mf_rep, ID_rep_number) %>%
+  arrange(Days_to_germ) %>%
+  mutate(Cum_germ = cumsum(Num_germ)) %>%
+  ungroup()
+```
+
+Germination proportion by pot by day
+```{r}
+germ_long <- germ_long %>%
+  mutate(Germ_prop = Cum_germ/Total_Seeds_Planted)
+```
+
+Germination rate per seed
+```{r}
+germ_long <- germ_long %>%
+  mutate(Germ_rate_seed = if_else(Num_germ == 1, 1/Days_to_germ, NA_real_),
+         Germ_rate_seed = if_else(is.infinite(Germ_rate_seed), 1, Germ_rate_seed)) # 1 seeds germinated on the start day so change germ rate from inf to 1
+```
+
+```{r}
+germ_avg <- germ_long %>%
+  group_by(dame_pop, sire_pop, Days_to_germ) %>%
+  summarize(Avg_germ_prop = mean(Germ_prop, na.rm=TRUE),
+            SD_germ_prop = sd(Germ_prop, na.rm=TRUE),
+            Avg_germ_rate = mean(Germ_rate_seed, na.rm=TRUE),
+            SD_germ_rate = sd(Germ_rate_seed, na.rm=TRUE),
+            n = sum(!is.na(Germ_rate_seed)),  # Count non-NA values for Germ_rate_seed
+    SE_germ_rate = SD_germ_rate / sqrt(n),  
+    .groups = "drop")
+
+overall_avg_germ_rate <- germ_avg %>%
+  group_by(dame_pop, sire_pop) %>%
+  summarise(
+    Avg_germ_rate_all = mean(Avg_germ_rate, na.rm=TRUE),
+    SD_germ_rate_all = sd(Avg_germ_rate, na.rm=TRUE),
+    SE_germ_rate_all = SD_germ_rate_all/sqrt(n()),
+    .groups="drop"
+  )
+```
+
+```{r}
+Germ_rate_plot <- ggplot(overall_avg_germ_rate, aes(x=dame_pop, y=Avg_germ_rate_all)) + 
+  geom_point() +
+  geom_errorbar(aes(ymin=Avg_germ_rate_all-SE_germ_rate_all, ymax=Avg_germ_rate_all+SE_germ_rate_all, width=0.2)) +
+  theme(axis.text.x=element_text(angle=90, hjust=1)) +
+  ylim(0,1)
+
+ggsave(filename="Average_germ_rate.png", plot=Germ_rate_plot)
+```
+```{r}
+Germ_prop_plot <- ggplot(germ_avg, aes(x=Days_to_germ, y=Avg_germ_prop)) +
+  geom_line(size=1)+
+  facet_wrap(.~dame_pop, scales="free")
+
+ggsave(filename = "Total_germ_prop.png", plot=Germ_prop_plot)
+
 
 ```
 
