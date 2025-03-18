@@ -63,43 +63,52 @@ germ_long <- germ_long %>%
          Germ_rate_seed = if_else(is.infinite(Germ_rate_seed), 1, Germ_rate_seed)) # 1 seeds germinated on the start day so change germ rate from inf to 1
 ```
 
+Calculate average and SE germ prop and rate
 ```{r}
-germ_avg <- germ_long %>%
+avg_germ_prop <- germ_long %>%
   group_by(dame_pop, sire_pop, Days_to_germ) %>%
   summarize(Avg_germ_prop = mean(Germ_prop, na.rm=TRUE),
             SD_germ_prop = sd(Germ_prop, na.rm=TRUE),
-            Avg_germ_rate = mean(Germ_rate_seed, na.rm=TRUE),
-            SD_germ_rate = sd(Germ_rate_seed, na.rm=TRUE),
-            n = sum(!is.na(Germ_rate_seed)),  # Count non-NA values for Germ_rate_seed
-    SE_germ_rate = SD_germ_rate / sqrt(n),  
+            n=sum(Germ_prop != 0),
+            SE_germ_prop= SD_germ_prop/sqrt(n),
     .groups = "drop")
 
-overall_avg_germ_rate <- germ_avg %>%
+avg_germ_rate <- germ_long %>%
   group_by(dame_pop, sire_pop) %>%
   summarise(
-    Avg_germ_rate_all = mean(Avg_germ_rate, na.rm=TRUE),
-    SD_germ_rate_all = sd(Avg_germ_rate, na.rm=TRUE),
+    Avg_germ_rate_all = mean(Germ_rate_seed, na.rm=TRUE),
+    SD_germ_rate_all = sd(Germ_rate_seed, na.rm=TRUE),
+    n = sum(!is.na(Germ_rate_seed)),
     SE_germ_rate_all = SD_germ_rate_all/sqrt(n()),
     .groups="drop"
   )
 ```
 
+Plot Average germ rate: mean + error bars and boxplot
 ```{r}
-Germ_rate_plot <- ggplot(overall_avg_germ_rate, aes(x=dame_pop, y=Avg_germ_rate_all)) + 
+Germ_rate_plot <- ggplot(avg_germ_rate, aes(x=dame_pop, y=Avg_germ_rate_all)) + 
   geom_point() +
   geom_errorbar(aes(ymin=Avg_germ_rate_all-SE_germ_rate_all, ymax=Avg_germ_rate_all+SE_germ_rate_all, width=0.2)) +
   theme(axis.text.x=element_text(angle=90, hjust=1)) +
   ylim(0,1)
 
 ggsave(filename="Average_germ_rate.png", plot=Germ_rate_plot)
+
+
+Germ_rate_boxplot <- ggplot(germ_long, aes(x=dame_pop, y=Germ_rate_seed)) +
+  geom_boxplot() +
+  labs(y="Average germination rate (1/days to germinate)")
+
+ggsave(filename="Average_germ_rate_boxplot.png", plot=Germ_rate_boxplot)
 ```
+
+Plot germ proportion
 ```{r}
-Germ_prop_plot <- ggplot(germ_avg, aes(x=Days_to_germ, y=Avg_germ_prop)) +
+Germ_prop_plot <- ggplot(avg_germ_prop, aes(x=Days_to_germ, y=Avg_germ_prop)) +
   geom_line(size=1)+
-  facet_wrap(.~dame_pop, scales="free")
+  facet_wrap(.~dame_pop, scales="free")+
+  labs(y="Total Germination Proportion")
 
 ggsave(filename = "Total_germ_prop.png", plot=Germ_prop_plot)
-
-
 ```
 
