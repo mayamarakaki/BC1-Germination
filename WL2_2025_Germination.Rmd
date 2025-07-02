@@ -1,0 +1,298 @@
+---
+title: "WL2_2025_Germination"
+output: html_document
+date: "2025-05-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(googlesheets4)
+library(dplyr)
+library(tidyverse)
+library(emmeans)
+library(lmtest)
+```
+
+### Load data
+
+```{r}
+url <- "https://docs.google.com/spreadsheets/d/1WP4QA1Z4SRlhaBa_PJOcZQvDXj2JjPd-z82jmw2eirY/edit?gid=0#gid=0"
+germ <- read_sheet(url, sheet="Both_Weeks")
+```
+
+#### Update seeds_per_pot for rows where Num_germ is greater
+
+```{r}
+germ_update_planted_count <- germ %>%
+  mutate(seeds_per_pot = if_else(Unique.ID %in% c(1842, 1873, 1967, 2345, 2079, 2250) & seeds_per_pot == 3, 4, seeds_per_pot)) %>%
+  mutate(seeds_per_pot = if_else(Unique.ID %in% c(1839) & seeds_per_pot == 3, 5, seeds_per_pot)) %>%
+  mutate(seeds_per_pot = if_else(Unique.ID %in% c(2091) & seeds_per_pot == 1, 2, seeds_per_pot))
+```
+
+#### Pivot long and convert date to days to germ
+
+```{r}
+#remove Num_germ and Notes columns for now
+germ_update_planted_count_no_cum_germ <- germ_update_planted_count[,c(1:7,9:24)]
+
+#pivot long
+germ_long <- germ_update_planted_count_no_cum_germ %>%
+  pivot_longer(cols = 8:ncol(germ_update_planted_count_no_cum_germ),
+               names_to= "Date",
+               values_to = "Num_germ") %>%
+  mutate(Date=mdy(Date))
+
+#Convert date to days to germ
+start_date <- as.Date("2025-04-24")
+
+germ_long_dt_germ <- germ_long %>%
+  mutate(Days_to_germ = as.integer(Date-start_date))
+```
+
+Germination rate per seed
+
+```{r}
+germ_long_dt_germ_rate <- germ_long_dt_germ %>%
+  mutate(Germ_rate_seed = if_else(Num_germ == 1, 1/Days_to_germ, NA_real_),
+         Germ_rate_seed = if_else(is.infinite(Germ_rate_seed), 1, Germ_rate_seed)) # 1 seeds germinated on the start day so change germ rate from inf to 1
+```
+
+Germination proportion by pot by day (is this different from germination prob? - no)
+
+```{r}
+germ_prop <- germ_update_planted_count %>%
+  mutate(Germ_prop = Num_germ/seeds_per_pot)
+```
+
+Calculate average and SE germ prop and rate from pot proportions - probably not how I should do this
+
+```{r}
+avg_germ_prop <- germ_prop %>%
+  group_by(pop.id) %>%
+  summarize(Avg_germ_prop = mean(Germ_prop, na.rm=TRUE),
+            SD_germ_prop = sd(Germ_prop, na.rm=TRUE),
+            n=sum(Germ_prop != 0), #number of pots with germ, not total number of germ
+            SE_germ_prop= SD_germ_prop/sqrt(n),
+    .groups = "drop") %>%
+  mutate(
+    Cross_Type = case_when(
+      str_count(pop.id, "x") == 0 ~ "Parent",
+      str_count(pop.id, "x") == 1 ~ "F1",
+      str_count(pop.id, "x") == 2 ~ "BC1",
+      str_count(pop.id, "x") == 3 ~ "F2",
+      TRUE ~ "Other"  # Fallback for unexpected cases
+    )
+  ) %>%
+  ungroup()
+
+total_planted <- germ_prop %>%
+  group_by(pop.id) %>%
+  summarise(total_seeds = sum(seeds_per_pot, na.rm=TRUE)) %>%
+  ungroup()
+
+avg_germ_prop <- avg_germ_prop %>%
+  left_join(total_planted) %>%
+  arrange(Cross_Type)%>%
+  select(Cross_Type, pop.id, n, total_seeds, Avg_germ_prop, SD_germ_prop, SE_germ_prop)
+```
+
+Calculate average and SE germ rate from pot proportions - probably not how I should do this
+
+```{r}
+avg_germ_rate <- germ_long_dt_germ_rate %>%
+  group_by(pop.id) %>%
+  summarise(
+    Avg_germ_rate_all = mean(Germ_rate_seed, na.rm=TRUE),
+    SD_germ_rate_all = sd(Germ_rate_seed, na.rm=TRUE),
+    n = sum(!is.na(Germ_rate_seed)),
+    SE_germ_rate_all = SD_germ_rate_all/sqrt(n()),
+    .groups="drop"
+  ) %>%
+  mutate(
+    Cross_Type = case_when(
+      str_count(pop.id, "x") == 0 ~ "Parent",
+      str_count(pop.id, "x") == 1 ~ "F1",
+      str_count(pop.id, "x") == 2 ~ "BC1",
+      str_count(pop.id, "x") == 3 ~ "F2",
+      TRUE ~ "Other"  # Fallback for unexpected cases
+    )
+  )
+```
+
+#### A better approach to estimate mean and var for germ prop - the averages are similar to taking the average of each pot proportion and the SE is smaller
+
+```{r}
+#pop.id as fixed effect
+avg_prop <- glm(cbind(Num_germ, seeds_per_pot-Num_germ) ~ pop.id,
+                data=germ_update_planted_count,
+                family=binomial(link="logit"))
+
+#intercept as a fixed effect to see if pop.id is significant
+avg_prop_null <- glm(cbind(Num_germ, seeds_per_pot-Num_germ) ~ 1,
+                data=germ_update_planted_count,
+                family=binomial(link="logit"))
+
+lrtest(avg_prop_null, avg_prop) #yes, pop.id is a significant predictor
+
+summary(avg_prop)
+
+estimates <- emmeans(avg_prop, ~pop.id, type="response") #using emmeans to extract avg and SE from the model, while also backtransforming it
+summary(estimates)
+
+#make a tibble and add cross type
+estimates_tbl <- estimates_tbl %>%
+  mutate(prob = format(prob, scientific = FALSE)) %>%
+  mutate(SE = format(SE, scientific = FALSE)) %>%
+  mutate(prob = as.numeric(prob),
+         SE = as.numeric(SE)) %>%
+  select(pop.id, prob, SE) %>%
+  left_join(avg_germ_prop[,1:2])
+
+#write csv
+write.csv(estimates_tbl, file="WL2_2025_germ_prob.csv", row.names = FALSE)
+
+#comparing the average estimates from the model to the average of the pot proportions - they look similar
+test_comp <- estimates_tbl %>%
+  left_join(avg_germ_prop, by="pop.id") %>%
+  select(pop.id, Avg_germ_prop, prob,SE_germ_prop, SE)
+```
+
+```{r}
+ggplot(estimates_tbl, aes(x=pop.id, y=prob)) +
+  geom_point(size=0.9)+
+  geom_errorbar(aes(ymin=prob-SE, ymax=prob+SE, width=0.1)) +
+  facet_wrap(~Cross_Type, scales="free_x")+
+  theme(axis.text.x=element_text(angle=90, hjust=1, size=5)) +
+  ylim(0,1) +
+  labs(y="Germination Proportion")
+```
+
+```{r}
+#ggplot(avg_germ_rate, aes(x=pop.id, y=Avg_germ_rate_all)) + 
+ # geom_point() +
+  #geom_errorbar(aes(ymin=Avg_germ_rate_all-SE_germ_rate_all, ymax=Avg_germ_rate_all+SE_germ_rate_all, width=0.2)) +
+ # theme(axis.text.x=element_text(angle=90, hjust=1, size=5)) +
+  #ylim(0,1) +
+  #facet_wrap(~Cross_Type, scales= "free_x")
+```
+
+```{r}
+#ggplot(avg_germ_prop, aes(x=pop.id, y=Avg_germ_prop)) +
+ # geom_point(size=0.9)+
+  #geom_errorbar(aes(ymin=Avg_germ_prop-SE_germ_prop, ymax=Avg_germ_prop+SE_germ_prop, width=0.1)) +
+ # facet_wrap(~Cross_Type, scales="free_x")+
+#  theme(axis.text.x=element_text(angle=90, hjust=1, size=5)) +
+ # ylim(0,1) +
+  #labs(y="Total Germination Proportion")
+
+```
+
+```{r}
+#germ_prop_summary_table <- avg_germ_prop %>%
+ # arrange(Cross_Type, pop.id) %>%
+  #kable(caption="Germination Prop Summary")
+#print(germ_prop_summary_table)
+```
+
+```{r}
+#print(as.data.frame(avg_germ_prop %>% filter(Cross_Type == "Parent")), row.names = FALSE)
+
+#print(as.data.frame(avg_germ_prop %>% filter(Cross_Type == "F1")), row.names = FALSE)
+
+#print(as.data.frame(avg_germ_prop %>% filter(Cross_Type == "F2")), row.names = FALSE)
+
+#print(as.data.frame(avg_germ_prop %>% filter(Cross_Type == "BC1")), row.names = FALSE)
+```
+
+Code from Julin to calculate prop High elev parent
+
+```{r}
+el <- read_sheet("https://docs.google.com/spreadsheets/d/1FORIRL-1J15fD5iPqVyv_EWbc6uhV83-NL8SsjJL0Hw/edit#gid=0") %>% 
+  filter(`Species Code`=="STTO") %>%
+  mutate(elevation=unlist(`Elevation (m)`)) %>%
+  select(pop.id=`Site code`, elevation) %>%
+  mutate(pop.id=str_replace(pop.id, "YOSE", "YO"))
+
+avg_germ_prop <- avg_germ_prop %>%
+  mutate(pop.id = as.character(pop.id))
+el <- el %>%
+  mutate(pop.id = as.character(pop.id))
+
+el <- el %>%
+  mutate(high=elevation>2000)
+
+avg_germ_prop_w_elev <- avg_germ_prop %>%
+  left_join(el, by = "pop.id")
+```
+
+```{r}
+high_regex <- el %>%
+  filter(high, !is.na(pop.id)) %>% 
+  pull(pop.id) %>%
+  str_c(collapse = "|")
+
+low_regex <- el %>%
+  filter(!high, !is.na(pop.id)) %>% 
+  pull(pop.id) %>%
+  str_c(collapse = "|")
+
+all_regex <- el %>%
+  filter(!is.na(pop.id)) %>% 
+  pull(pop.id) %>%
+  str_c(collapse = "|")
+
+```
+
+```{r}
+F1_avg_germ_prop <- avg_germ_prop_w_elev %>%
+  filter(Cross_Type == "F1") %>%
+  mutate(count.high=str_count(pop.id, high_regex),
+         count.low=str_count(pop.id, low_regex),
+         prop.high = count.high / (count.high + count.low),
+         maternal.pop = str_extract(pop.id, "^[A-Z]{2,3}[1-9]{0,2}"),
+         paternal.pop = str_extract(pop.id, "[A-Z]{2,3}[1-9]{0,2}$"),
+         maternal.high=str_count(maternal.pop, high_regex),
+         paternal.high=str_count(paternal.pop, high_regex)
+  )
+```
+
+```{r}
+F2_avg_germ_prop <- avg_germ_prop_w_elev %>%
+  filter(Cross_Type == "F2") %>%
+  mutate(
+    maternal.pop = str_extract(pop.id, "^\\(.*?\\)|[A-Z]{2,3}[1-9]{0,2}"),
+    paternal.pop = str_extract(pop.id, " \\(.*?\\)$|[A-Z]{2,3}[1-9]{0,2}$") %>% trimws(),
+    maternal.grandmother.pop = str_extract(maternal.pop, "[A-Z]{2,3}[1-9]{0,2}"),
+    maternal.grandmother.high = str_count(maternal.grandmother.pop, high_regex)
+  ) %>%
+  rowwise() %>%
+  mutate(
+    maternal.high = str_count(maternal.pop, high_regex) / str_count(maternal.pop, all_regex),
+    paternal.high = str_count(paternal.pop, high_regex) / str_count(paternal.pop, all_regex),
+    prop.high = mean(c(maternal.high, paternal.high), na.rm = TRUE)
+  ) %>%
+  ungroup()
+```
+
+```{r}
+cross_type <- avg_germ_prop[,c(1,6)]
+
+germ_update_planted_count_cross_type <- germ_update_planted_count %>%
+  left_join(cross_type, by="pop.id")
+
+summary_table <- germ_update_planted_count_cross_type %>%
+  group_by(Cross_Type,pop.id) %>%
+  summarise(
+    Pot_num = n(),
+    Num_seeds_planted = sum(seeds_per_pot, na.rm = TRUE),
+    Num_seeds_germ = sum(Num_germ, na.rm = TRUE),
+    Num_new_pots = pmax(Num_seeds_germ - Pot_num, 0),
+    .groups = "drop"
+  )
+
+write.csv(summary_table, "germ_summary_table.csv", row.names=FALSE)
+print(summary_table, n=Inf)
+```
